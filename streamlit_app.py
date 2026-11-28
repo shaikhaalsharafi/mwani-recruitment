@@ -498,8 +498,19 @@ COMMON_SYNONYMS = [
     ["arabic", "arabic language"], ["english", "english language"],
     ["port operations", "terminal operations", "marine operations", "port management"],
     ["contract management", "contract administration", "contracts administration"],
+    ["marine systems", "shipboard systems", "vessel systems", "ship systems", "engine room systems", "marine engineering systems"],
+    ["maritime regulations", "international maritime regulations", "IMO", "SOLAS", "MARPOL", "class rules", "classification society requirements", "maritime standards"],
+    ["commissioning", "installation and commissioning", "testing and commissioning", "installation, testing and commissioning"],
+    ["troubleshooting", "fault finding", "fault diagnosis", "diagnostics"],
+    ["technical documentation", "technical reports", "technical reporting", "maintenance documentation", "maintenance records"],
+    ["continuous improvement", "process improvement", "operational efficiency"],
+    ["cad", "computer aided design", "computer-aided design", "AutoCAD", "SolidWorks", "AutoCAD Electrical", "CATIA", "Inventor"],
+    ["planning and organizing", "planning and organising", "planning skills", "organizational skills"],
+    ["safety awareness", "safety procedures", "safety culture", "safety training"],
+    ["inspection", "inspections", "quality inspection", "inspection and testing"],
 ]
-RELATED = [["python", "data analysis", "machine learning", "sql"], ["project management", "stakeholder management", "risk management", "leadership"],
+RELATED = [["commissioning", "inspection", "troubleshooting"], ["marine systems", "port operations"],
+           ["python", "data analysis", "machine learning", "sql"], ["project management", "stakeholder management", "risk management", "leadership"],
            ["microsoft excel", "power bi", "data analysis"], ["enterprise resource planning", "procurement", "supply chain management", "logistics"],
            ["quality assurance", "quality control", "health and safety"], ["human resources", "recruitment"], ["budgeting", "accounting"],
            ["port operations", "logistics", "supply chain management"], ["customer service", "communication", "stakeholder management"]]
@@ -720,17 +731,34 @@ def criteria_from_jd(title, jd, model):
     return out[:15]
 
 
+def read_docx_text(data):
+    """Text of a Word file; list items are marked with '- ' so they can be recognised as requirements."""
+    if docx_lib is None:
+        raise RuntimeError("python-docx is not installed")
+    out = []
+    for para in docx_lib.Document(io.BytesIO(data)).paragraphs:
+        t = para.text.strip()
+        if not t:
+            continue
+        is_list = "list" in (para.style.name or "").lower() or bool(para._p.xpath(".//w:numPr"))
+        out.append(("- " + t) if is_list else t)
+    return "\n".join(out)
+
+
 def criteria_from_jd_rules(jd):
     out = []
-    for line in re.split(r"[\n•▪]+|(?<=[.;])\s+", jd):
-        line = re.sub(r"^\s*[-*\d.)]+\s*", "", line).strip()
-        if re.match(r"(?i)^(we |our |the company|about|join|you will|this role|job title|responsibilit|required qualification|qualifications|requirements?|preferred|eligibility|benefits)", line) and (len(line) <= 40 or line.endswith(":") or re.match(r"(?i)^(we |our |about|join|job title)", line)):
+    jd = re.sub(r"(?m)^\s*[•▪●·]\s*", "- ", jd)
+    structured = len(re.findall(r"(?m)^\s*(?:[-*]|\d+[.)])\s+\S", jd)) >= 3  # a bulleted JD: headings and intro text are not requirements
+    for raw in re.split(r"[\n]+" if structured else r"[\n]+|(?<=[.;])\s+(?=[A-Z])", jd):
+        is_bullet = bool(re.match(r"^\s*(?:[-*]|\d+[.)])\s+", raw))
+        line = re.sub(r"^\s*[-*\d.)]+\s*", "", raw).strip()
+        if re.match(r"(?i)^(we |our |the company|about|join|you will|this role|job title|job purpose|responsibilit|required qualification|qualifications|requirements?|competenc|preferred|eligibility|benefits)", line) and (len(line) <= 40 or line.endswith(":") or re.match(r"(?i)^(we |our |about|join|job title|job purpose)", line)):
             continue
         keyword = re.search(r"experience|degree|bachelor|certif|skill|knowledge|ability|proficien|must|required|years|licen[cs]e|qualification|fluen", line, re.I)
         short_item = len(line) <= 100 and not line.endswith((":", "."))
-        if 8 <= len(line) <= 220 and (keyword or short_item):
-            out.append((line, None, ""))
-        if len(out) >= 15:
+        if 8 <= len(line) <= 220 and ((is_bullet) if structured else (is_bullet or keyword or short_item)):
+            out.append((line.rstrip("."), None, ""))
+        if len(out) >= 22:
             break
     return out
 
@@ -778,7 +806,7 @@ def compute_weights(df, fixed=()):
 
 
 REQ_COLS = ("jd requirement", "job requirement", "requirement", "role requirement", "criterion", "responsibility", "duty",
-            "qualification", "competency", "skill", "description", "evidence")
+            "qualification", "competency", "skill")  # 'description' / 'evidence' columns describe roles, so they do not make criteria
 
 
 def has_requirement_columns(frame):
@@ -832,15 +860,18 @@ def build_proposal(frame, title, jd, model, ai_ok):
         if not jd_items:
             jd_items = criteria_from_jd_rules(jd)
         seen = {_norm(t) for _, t, _, _ in items}
-        existing_terms = [_keyterms(t) for _, t, _, _ in items]
+        taxonomy_terms = [_keyterms(t) for _, t, _, _ in items]
+        kept_terms = []
         for n, (text, imp, why) in enumerate(jd_items, start=1):
             if _norm(text) in seen:
                 continue
             kt = _keyterms(text)
-            if kt and any(e and len(kt & e) / min(len(kt), len(e)) >= 0.5 for e in existing_terms):
+            if len(kt) >= 2 and any(len(kt & e) >= 2 and len(kt & e) / min(len(kt), len(e)) >= 0.6 for e in taxonomy_terms):
                 continue  # already covered by a taxonomy requirement
+            if len(kt) >= 2 and any(kt <= e for e in kept_terms):
+                continue  # already covered by a longer job-description item
             seen.add(_norm(text))
-            existing_terms.append(kt)
+            kept_terms.append(kt)
             wpts, wwhy = wording_importance(text)
             items.append((f"JD-{n:02d}", text, imp or wpts,
                           f"AI rated {imp:g}/5 from the job description: {why or 'no reason given'}." if imp else f"Job description wording: {wwhy}."))
@@ -1746,13 +1777,19 @@ def step1():
             c1.caption(f"Recognised role family: **{family}**" + (f" · related titles: {', '.join(rel)}" if rel else ""))
         role_file = c2.file_uploader("Role taxonomy (.xlsx) - saved for future cycles", type=["xlsx"], key="role_up")
         with st.expander("Job description (type or upload it, so the AI can propose criteria)", expanded=not ss.approved):
-            jd_up = st.file_uploader("Job description file (.pdf or .txt)", type=["pdf", "txt"], key="jd_up")
+            jd_up = st.file_uploader("Job description file (.docx, .pdf or .txt)", type=["docx", "pdf", "txt"], key="jd_up")
             st.text_area("…or paste the job description, qualifications, responsibilities and required competencies", height=150, key="jd_text_in")
         jd = (ss.get("jd_text_in") or "").strip()
         if jd_up is not None:
             try:
-                jd = (jd + "\n" + ("\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(jd_up.getvalue())).pages)
-                                   if jd_up.name.lower().endswith(".pdf") else jd_up.getvalue().decode("utf-8", errors="ignore"))).strip()
+                data_jd, nm = jd_up.getvalue(), jd_up.name.lower()
+                if nm.endswith(".pdf"):
+                    jd_file_text = "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(data_jd)).pages)
+                elif nm.endswith(".docx"):
+                    jd_file_text = read_docx_text(data_jd)
+                else:
+                    jd_file_text = data_jd.decode("utf-8", errors="ignore")
+                jd = (jd + "\n" + jd_file_text).strip()
             except Exception:
                 st.warning("Could not read the job description file.")
         role_bytes = role_file.getvalue() if role_file is not None else None
